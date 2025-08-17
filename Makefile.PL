@@ -9,3 +9,17 @@ WriteMakefile(
   },
   AUTHOR => 'Guerra24',
 );
+
+sub MY::postamble {
+    return <<'MAKE_FRAG';
+all ::
+	C:\Program Files\dotnet\dotnet.exe publish --nologo -v:minimal -p:PublishProfile=Release csharp/Win32.FileSystemHelper.csproj
+
+install ::
+	cp csharp/bin/Release/publish/Win32_FileSystemHelper.dll $(INSTALLBIN)
+
+clean ::
+	C:\Program Files\dotnet\dotnet.exe clean --nologo -v:minimal -c Release csharp/Win32.FileSystemHelper.csproj
+
+MAKE_FRAG
+}
