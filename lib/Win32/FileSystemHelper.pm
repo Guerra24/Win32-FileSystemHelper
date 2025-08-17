@@ -9,12 +9,7 @@ our $VERSION = 0.01;
 use FFI::Platypus;
 use FFI::CheckLib qw( find_lib_or_die );
 
-my $ffi = FFI::Platypus->new( api => 2, lib => find_lib_or_die( lib => 'Win32_FileSystemHelper', verify => sub {
-    my($name, $libpath) = @_;
-    print $name . "\n";
-    print $libpath . "\n";
-    return 1;
-} ) );
+my $ffi = FFI::Platypus->new( api => 2, lib => find_lib_or_die( lib => 'Win32_FileSystemHelper' ) );
 
 $ffi->attach( ['FreeMemory' => 'free_memory'] => ['opaque'] => 'void' );
 $ffi->attach( ['Initialize' => 'initialize'] => ['string'] => 'void' );
