@@ -1,9 +1,12 @@
-﻿using System.Collections.Concurrent;
+﻿using DotNet.Globbing;
+using System.Collections.Concurrent;
 using System.Runtime.InteropServices;
+using System.Text.RegularExpressions;
+using Windows.Win32;
 
 namespace Win32.FileSystemHelper;
 
-public static class NativeExports
+public static partial class NativeExports
 {
     private static FileSystemWatcher watcher = null!;
 
@@ -11,12 +14,16 @@ public static class NativeExports
 
     private static ManualResetEventSlim eventing = new();
 
-    [UnmanagedCallersOnly(EntryPoint = "Initialize")]
-    public static void Initialize(nint pathPtr)
-    {
-        var path = Marshal.PtrToStringAnsi(pathPtr);
+    private static ConcurrentDictionary<string, string> LongToShort = new();
 
-        watcher = new FileSystemWatcher(Path.GetFullPath(path!));
+    private static List<Glob> Filters = new();
+
+    [UnmanagedCallersOnly(EntryPoint = "Initialize")]
+    public static void Initialize(nint pathPtr, nint filtersPtr)
+    {
+        var path = Marshal.PtrToStringAnsi(pathPtr)!;
+
+        watcher = new FileSystemWatcher(Path.GetFullPath(path));
 
         watcher.NotifyFilter = NotifyFilters.DirectoryName
                              | NotifyFilters.FileName;
@@ -29,21 +36,24 @@ public static class NativeExports
         watcher.Renamed += OnRenamed;
         watcher.Error += OnError;
 
-        watcher.Filters.Add("*.zip");
-        watcher.Filters.Add("*.rar");
-        watcher.Filters.Add("*.7z");
-        watcher.Filters.Add("*.tar");
-        watcher.Filters.Add("*.tar.gz");
-        watcher.Filters.Add("*.lzma");
-        watcher.Filters.Add("*.xz");
-        watcher.Filters.Add("*.cbz");
-        watcher.Filters.Add("*.cbr");
-        watcher.Filters.Add("*.cb7");
-        watcher.Filters.Add("*.cbt");
-        watcher.Filters.Add("*.pdf");
-        watcher.Filters.Add("*.epub");
-        watcher.Filters.Add("*.tar.zst");
-        watcher.Filters.Add("*.zst");
+        var filters = Marshal.PtrToStringAnsi(filtersPtr)!;
+
+        GlobOptions.Default.Evaluation.CaseInsensitive = true;
+
+        foreach (Match match in FilterRegex().Matches(filters))
+        {
+            var filter = $"*.{match.Groups[1].Value.Replace("\\", "")}";
+            Filters.Add(Glob.Parse($"**/{filter}"));
+            watcher.Filters.Add(filter);
+        }
+
+        foreach (var f in Directory.EnumerateFiles(path, "*.*", SearchOption.AllDirectories))
+        {
+            var file = f.FS();
+            foreach (var glob in Filters)
+                if (glob.IsMatch(file))
+                    AddOrUpdateLongToShort(file);
+        }
 
         watcher.IncludeSubdirectories = true;
         watcher.EnableRaisingEvents = true;
@@ -94,33 +104,53 @@ public static class NativeExports
     [UnmanagedCallersOnly(EntryPoint = "GetFullPath")]
     public static nint GetFullPath(nint pathPtr)
     {
-        var path = Marshal.PtrToStringAnsi(pathPtr);
-        path = Path.GetFullPath(path!).Replace('\\', '/');
-        return Marshal.StringToHGlobalAnsi(path);
+        return Marshal.StringToHGlobalAnsi(Path.GetFullPath(Marshal.PtrToStringAnsi(pathPtr)!).FS());
+    }
+
+    [UnmanagedCallersOnly(EntryPoint = "GetShortPath")]
+    public static nint GetShortPath(nint pathPtr)
+    {
+        var path = Marshal.PtrToStringAnsi(pathPtr)!;
+
+        Span<char> buffer = stackalloc char[(int)PInvoke.MAX_PATH];
+        var useMap = PInvoke.GetShortPathName(path, buffer) == 0;
+
+        var shortPath = buffer.ToString().FS();
+
+        if (useMap && LongToShort.TryGetValue(path, out shortPath))
+        {
+            return Marshal.StringToHGlobalAnsi(shortPath);
+        }
+
+        return Marshal.StringToHGlobalAnsi(shortPath);
     }
 
     private static void OnCreated(object sender, FileSystemEventArgs e)
     {
+        var path = e.FullPath.FS();
+        AddOrUpdateLongToShort(path);
+        events.Enqueue($"{path}|create");
         eventing.Set();
-        events.Enqueue($"{e.FullPath}|create");
     }
 
     private static void OnChanged(object sender, FileSystemEventArgs e)
     {
+        events.Enqueue($"{e.FullPath.FS()}|modify");
         eventing.Set();
-        events.Enqueue($"{e.FullPath}|modify");
     }
 
     private static void OnDeleted(object sender, FileSystemEventArgs e)
     {
+        events.Enqueue($"{e.FullPath.FS()}|delete");
         eventing.Set();
-        events.Enqueue($"{e.FullPath}|delete");
     }
 
     private static void OnRenamed(object sender, RenamedEventArgs e)
     {
+        var path = e.FullPath.FS();
+        events.Enqueue($"{path}|modify");
+        AddOrUpdateLongToShort(path);
         eventing.Set();
-        events.Enqueue($"{e.FullPath}|modify");
     }
 
     private static void OnError(object sender, ErrorEventArgs e) =>
@@ -137,4 +167,16 @@ public static class NativeExports
             PrintException(ex.InnerException);
         }
     }
+
+    private static void AddOrUpdateLongToShort(string file)
+    {
+        Span<char> buffer = new char[(int)PInvoke.MAX_PATH];
+        PInvoke.GetShortPathName(file, buffer);
+        LongToShort[file] = buffer.ToString().FS();
+    }
+
+    [GeneratedRegex(@"([\\.a-zA-Z0-9]+)[\)\|]")]
+    private static partial Regex FilterRegex();
+
+    private static string FS(this string path) => path.Replace('\\', '/');
 }

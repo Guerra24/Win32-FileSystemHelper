@@ -1,0 +1,2 @@
+﻿GetShortPathName
+MAX_PATH
