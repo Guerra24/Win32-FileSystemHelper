@@ -21,42 +21,49 @@ public static partial class NativeExports
     [UnmanagedCallersOnly(EntryPoint = "Initialize")]
     public static void Initialize(nint pathPtr, nint filtersPtr)
     {
-        var path = Marshal.PtrToStringAnsi(pathPtr)!;
-
-        watcher = new FileSystemWatcher(Path.GetFullPath(path));
-
-        watcher.NotifyFilter = NotifyFilters.DirectoryName
-                             | NotifyFilters.FileName;
-
-        watcher.InternalBufferSize = 65536;
-
-        watcher.Created += OnCreated;
-        watcher.Changed += OnChanged;
-        watcher.Deleted += OnDeleted;
-        watcher.Renamed += OnRenamed;
-        watcher.Error += OnError;
-
-        var filters = Marshal.PtrToStringAnsi(filtersPtr)!;
-
-        GlobOptions.Default.Evaluation.CaseInsensitive = true;
-
-        foreach (Match match in FilterRegex().Matches(filters))
+        try
         {
-            var filter = $"*.{match.Groups[1].Value.Replace("\\", "")}";
-            Filters.Add(Glob.Parse($"**/{filter}"));
-            watcher.Filters.Add(filter);
-        }
+            var path = Marshal.PtrToStringAnsi(pathPtr)!;
 
-        foreach (var f in Directory.EnumerateFiles(path, "*.*", SearchOption.AllDirectories))
+            watcher = new FileSystemWatcher(Path.GetFullPath(path));
+
+            watcher.NotifyFilter = NotifyFilters.DirectoryName
+                                 | NotifyFilters.FileName;
+
+            watcher.InternalBufferSize = 65536;
+
+            watcher.Created += OnCreated;
+            watcher.Changed += OnChanged;
+            watcher.Deleted += OnDeleted;
+            watcher.Renamed += OnRenamed;
+            watcher.Error += OnError;
+
+            var filters = Marshal.PtrToStringAnsi(filtersPtr)!;
+
+            GlobOptions.Default.Evaluation.CaseInsensitive = true;
+
+            foreach (Match match in FilterRegex().Matches(filters))
+            {
+                var filter = $"*.{match.Groups[1].Value.Replace("\\", "")}";
+                Filters.Add(Glob.Parse($"**/{filter}"));
+                watcher.Filters.Add(filter);
+            }
+
+            foreach (var f in Directory.EnumerateFiles(path, "*.*", SearchOption.AllDirectories))
+            {
+                var file = f.FS();
+                foreach (var glob in Filters)
+                    if (glob.IsMatch(file))
+                        AddOrUpdateLongToShort(file);
+            }
+
+            watcher.IncludeSubdirectories = true;
+            watcher.EnableRaisingEvents = true;
+        }
+        catch (Exception e)
         {
-            var file = f.FS();
-            foreach (var glob in Filters)
-                if (glob.IsMatch(file))
-                    AddOrUpdateLongToShort(file);
+            PrintException(e);
         }
-
-        watcher.IncludeSubdirectories = true;
-        watcher.EnableRaisingEvents = true;
     }
 
     [UnmanagedCallersOnly(EntryPoint = "Event")]
@@ -104,25 +111,41 @@ public static partial class NativeExports
     [UnmanagedCallersOnly(EntryPoint = "GetFullPath")]
     public static nint GetFullPath(nint pathPtr)
     {
-        return Marshal.StringToHGlobalAnsi(Path.GetFullPath(Marshal.PtrToStringAnsi(pathPtr)!).FS());
+        try
+        {
+            return Marshal.StringToHGlobalAnsi(Path.GetFullPath(Marshal.PtrToStringAnsi(pathPtr)!).FS());
+        }
+        catch (Exception e)
+        {
+            PrintException(e);
+        }
+        return nint.Zero;
     }
 
     [UnmanagedCallersOnly(EntryPoint = "GetShortPath")]
     public static nint GetShortPath(nint pathPtr)
     {
-        var path = Marshal.PtrToStringAnsi(pathPtr)!;
-
-        Span<char> buffer = stackalloc char[(int)PInvoke.MAX_PATH];
-        var useMap = PInvoke.GetShortPathName(path, buffer) == 0;
-
-        var shortPath = buffer.ToString().FS();
-
-        if (useMap && LongToShort.TryGetValue(path, out shortPath))
+        try
         {
+            var path = Marshal.PtrToStringAnsi(pathPtr)!;
+
+            Span<char> buffer = stackalloc char[(int)PInvoke.MAX_PATH];
+            var useMap = PInvoke.GetShortPathName(path, buffer) == 0;
+
+            var shortPath = buffer.ToString().FS();
+
+            if (useMap && LongToShort.TryGetValue(path, out shortPath))
+            {
+                return Marshal.StringToHGlobalAnsi(shortPath);
+            }
+
             return Marshal.StringToHGlobalAnsi(shortPath);
         }
-
-        return Marshal.StringToHGlobalAnsi(shortPath);
+        catch (Exception e)
+        {
+            PrintException(e);
+        }
+        return nint.Zero;
     }
 
     private static void OnCreated(object sender, FileSystemEventArgs e)
