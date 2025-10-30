@@ -8,7 +8,7 @@ namespace Win32.FileSystemHelper;
 
 public static partial class NativeExports
 {
-    private static FileSystemWatcher watcher = null!;
+    private static List<FileSystemWatcher> watchers = new();
 
     private static ConcurrentQueue<string> events = new();
 
@@ -23,31 +23,19 @@ public static partial class NativeExports
     {
         try
         {
+            GlobOptions.Default.Evaluation.CaseInsensitive = true;
+
             var path = Marshal.PtrToStringAnsi(pathPtr)!;
 
-            watcher = new FileSystemWatcher(Path.GetFullPath(path));
-
-            watcher.NotifyFilter = NotifyFilters.DirectoryName
-                                 | NotifyFilters.FileName;
-
-            watcher.InternalBufferSize = 65536;
-
-            watcher.Created += OnCreated;
-            watcher.Changed += OnChanged;
-            watcher.Deleted += OnDeleted;
-            watcher.Renamed += OnRenamed;
-            watcher.Error += OnError;
-
             var filters = Marshal.PtrToStringAnsi(filtersPtr)!;
-
-            GlobOptions.Default.Evaluation.CaseInsensitive = true;
 
             foreach (Match match in FilterRegex().Matches(filters))
             {
                 var filter = $"*.{match.Groups[1].Value.Replace("\\", "")}";
                 Filters.Add(Glob.Parse($"**/{filter}"));
-                watcher.Filters.Add(filter);
             }
+
+            AddWatcher(path, filters);
 
             foreach (var f in Directory.EnumerateFiles(path, "*.*", SearchOption.AllDirectories))
             {
@@ -57,8 +45,13 @@ public static partial class NativeExports
                         AddOrUpdateLongToShort(file);
             }
 
-            watcher.IncludeSubdirectories = true;
-            watcher.EnableRaisingEvents = true;
+            foreach (var f in Directory.EnumerateDirectories(path, "*.*", SearchOption.AllDirectories))
+            {
+                var info = new FileInfo(f);
+                if (!string.IsNullOrEmpty(info.LinkTarget))
+                    AddWatcher(f, filters);
+            }
+
         }
         catch (Exception e)
         {
@@ -92,7 +85,8 @@ public static partial class NativeExports
     public static void Cleanup()
     {
         eventing.Dispose();
-        watcher.Dispose();
+        watchers.ForEach(w => w.Dispose());
+        watchers.Clear();
     }
 
     [UnmanagedCallersOnly(EntryPoint = "Interrupt")]
@@ -196,6 +190,33 @@ public static partial class NativeExports
         Span<char> buffer = new char[(int)PInvoke.MAX_PATH];
         PInvoke.GetShortPathName(file, buffer);
         LongToShort[file] = buffer.ToString().FS();
+    }
+
+    private static void AddWatcher(string path, string filters)
+    {
+        var watcher = new FileSystemWatcher(Path.GetFullPath(path));
+
+        watcher.NotifyFilter = NotifyFilters.DirectoryName
+                             | NotifyFilters.FileName;
+
+        watcher.InternalBufferSize = 65536;
+
+        watcher.Created += OnCreated;
+        watcher.Changed += OnChanged;
+        watcher.Deleted += OnDeleted;
+        watcher.Renamed += OnRenamed;
+        watcher.Error += OnError;
+
+        foreach (Match match in FilterRegex().Matches(filters))
+        {
+            var filter = $"*.{match.Groups[1].Value.Replace("\\", "")}";
+            watcher.Filters.Add(filter);
+        }
+
+        watcher.IncludeSubdirectories = true;
+        watcher.EnableRaisingEvents = true;
+
+        watchers.Add(watcher);
     }
 
     [GeneratedRegex(@"([\\.a-zA-Z0-9]+)[\)\|]")]

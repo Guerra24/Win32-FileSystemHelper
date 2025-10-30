@@ -19,7 +19,7 @@ sub find( $path ) {
         my $name = $file eq '.' ? $path : "$path/$file";
         my $stat = lstatL( $name ) or die "unable to stat $name ($^E)";
 
-        if (($stat->{attribs} & (FILE_ATTRIBUTE_DIRECTORY | FILE_ATTRIBUTE_REPARSE_POINT)) == FILE_ATTRIBUTE_DIRECTORY) {
+        if (($stat->{attribs} & (FILE_ATTRIBUTE_DIRECTORY)) == FILE_ATTRIBUTE_DIRECTORY) {
             push @files, find( $name );
             next;
         }
