@@ -6,10 +6,11 @@ use utf8;
 use feature qw(signatures);
 no warnings 'experimental::signatures';
 
+use Encode;
+
 use Win32::LongPath qw(:funcs :fileattr);
 
-sub find( $path ) {
-    my @files;
+sub find( $path, $wanted ) {
 
     my $dir = Win32::LongPath->new();
     $dir->opendirL( $path ) or die ("unable to open $path ($^E)");
@@ -20,14 +21,16 @@ sub find( $path ) {
         my $stat = lstatL( $name ) or die "unable to stat $name ($^E)";
 
         if (($stat->{attribs} & (FILE_ATTRIBUTE_DIRECTORY)) == FILE_ATTRIBUTE_DIRECTORY) {
-            push @files, find( $name );
+            find( $name, $wanted );
             next;
         }
 
-        push @files, $name;
+        {
+            $_ = encode_utf8( $name );
+            $wanted->();
+        };
     }
     $dir->closedirL();
-    return @files;
 }
 
 1;

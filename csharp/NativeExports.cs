@@ -15,6 +15,7 @@ public static partial class NativeExports
     private static ManualResetEventSlim eventing = new();
 
     private static ConcurrentDictionary<string, string> LongToShort = new();
+    private static ConcurrentDictionary<string, string> ShortToLong = new();
 
     private static List<Glob> Filters = new();
 
@@ -42,7 +43,7 @@ public static partial class NativeExports
                 var file = f.FS();
                 foreach (var glob in Filters)
                     if (glob.IsMatch(file))
-                        AddOrUpdateLongToShort(file);
+                        AddOrUpdateFileMapping(file);
             }
 
             foreach (var f in Directory.EnumerateDirectories(path, "*.*", SearchOption.AllDirectories))
@@ -122,16 +123,12 @@ public static partial class NativeExports
         try
         {
             var path = Marshal.PtrToStringAnsi(pathPtr)!;
-
             Span<char> buffer = stackalloc char[(int)PInvoke.MAX_PATH];
-            var useMap = PInvoke.GetShortPathName(path, buffer) == 0;
 
-            var shortPath = buffer.ToString().FS();
+            if (PInvoke.GetShortPathName(path, buffer) == 0 && LongToShort.TryGetValue(path, out var shortPath))
+                return Marshal.StringToHGlobalAnsi(shortPath.FS());
 
-            if (useMap && LongToShort.TryGetValue(path, out shortPath))
-            {
-                return Marshal.StringToHGlobalAnsi(shortPath);
-            }
+            shortPath = buffer.ToString().Trim('\0').FS();
 
             return Marshal.StringToHGlobalAnsi(shortPath);
         }
@@ -145,7 +142,7 @@ public static partial class NativeExports
     private static void OnCreated(object sender, FileSystemEventArgs e)
     {
         var path = e.FullPath.FS();
-        AddOrUpdateLongToShort(path);
+        AddOrUpdateFileMapping(path);
         events.Enqueue($"{path}|create");
         eventing.Set();
     }
@@ -158,7 +155,10 @@ public static partial class NativeExports
 
     private static void OnDeleted(object sender, FileSystemEventArgs e)
     {
-        events.Enqueue($"{e.FullPath.FS()}|delete");
+        var fullPath = e.FullPath.FS();
+        if (!ShortToLong.TryGetValue(fullPath, out var path))
+            path = fullPath;
+        events.Enqueue($"{path}|delete");
         eventing.Set();
     }
 
@@ -166,12 +166,11 @@ public static partial class NativeExports
     {
         var path = e.FullPath.FS();
         events.Enqueue($"{path}|modify");
-        AddOrUpdateLongToShort(path);
+        AddOrUpdateFileMapping(path);
         eventing.Set();
     }
 
-    private static void OnError(object sender, ErrorEventArgs e) =>
-        PrintException(e.GetException());
+    private static void OnError(object sender, ErrorEventArgs e) => PrintException(e.GetException());
 
     private static void PrintException(Exception? ex)
     {
@@ -185,11 +184,14 @@ public static partial class NativeExports
         }
     }
 
-    private static void AddOrUpdateLongToShort(string file)
+    private static void AddOrUpdateFileMapping(string file)
     {
-        Span<char> buffer = new char[(int)PInvoke.MAX_PATH];
-        PInvoke.GetShortPathName(file, buffer);
-        LongToShort[file] = buffer.ToString().FS();
+        Span<char> buffer = stackalloc char[(int)PInvoke.MAX_PATH];
+        if (PInvoke.GetShortPathName(file, buffer) == 0)
+            return;
+        var path = buffer.ToString().Trim('\0').FS();
+        LongToShort[file] = path;
+        ShortToLong[path] = file;
     }
 
     private static void AddWatcher(string path, string filters)
